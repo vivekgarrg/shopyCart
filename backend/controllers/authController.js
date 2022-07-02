@@ -4,6 +4,8 @@ const ErrorHandler = require('../utils/errorHandler')
 const catchAsyncError = require('../middlewares/catchAsyncError');
 const user = require('../models/user');
 const sendToken = require('../utils/jwttoken');
+const sendEmail = require('../utils/sendEmail');
+const crypto = require('crypto')
 
 //register a user  => /api/v1/register
 
@@ -22,11 +24,6 @@ exports.registerUser = catchAsyncError( async (req, res, next)=>{
     })
 
     sendToken(user, 200, res)
-    // const token = user.getJwtToken();
-    // res.status(201).json({
-    //      success:true,
-    //      token
-    // })
 
 })
 
@@ -55,4 +52,85 @@ exports.loginUser = catchAsyncError( async(req, res, next)=>{
 
     sendToken(user, 200, res)
 
+})
+
+//Forgot Password--> api/v1/password/forgot
+
+exports.forgotPassword = catchAsyncError(async (req, res, next)=>{
+    const user = await User.findOne({email:req.body.email });
+
+    if(!user){
+        return next(new ErrorHandler('User not found with this email', 404));
+    }
+
+    //Get reset token 
+    const resetToken = user.getResetPasswordToken();
+
+    await user.save({ validateBeforeSave: false });
+
+    //Create reset password url 
+    const resetUrl = `${req.protocol}://${req.get('host')}/api/v1/password/reset/${resetToken}`;
+
+    const message = `Your password reset token is as follow:\n\n${resetUrl}\n\nIf you have not requested this email just ignore it.`
+
+    try{
+        await sendEmail({
+            email: user.email,
+            subject: 'ShopyCart Password Recovery',
+            message
+        })
+
+        res.status(200).json({
+            success:true,
+            message:`Email sent to: ${user.email}`
+        })
+
+    }catch(err){
+        user.resetPasswordToken = undefined;
+        user.resetPasswordExpire = undefined;
+
+        await user.save({ validateBeforeSave: false });
+    
+        return next(new ErrorHandler(err.message, 500));
+    }
+})
+
+//Reset Password--> api/v1/password/reset:token
+
+exports.resetPassword = catchAsyncError(async (req, res, next)=>{
+
+    //Hash URL token
+    const resetPasswordToken = crypto.createHash('sha256').update(req.params.token).digest('hex');
+
+    const user  = await User.findOne({
+        resetPasswordToken,
+        resetPasswordExpire: { $gt: Date.now() }
+    })
+
+    if(!user){
+        return next(new ErrorHandler('Password reset token is invalid or has been expired', 400))
+    }
+
+    if(req.body.password !== req.body.confirmPassword){
+        return next(new ErrorHandler('Password does not match', 400))
+    }
+
+    //Setup new password
+    user.password = req.body.password;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
+
+    await user.save()
+
+    sendToken(user, 200, res);
+
+})
+
+exports.logOut = catchAsyncError( async(req, res, next)=>{
+    res.cookie('token', null, {httpOnly : true, expires: new Date(Date.now())})
+
+    res.status(200).json({
+        success: true, 
+        message:"Logged out success."
+    })
 })
